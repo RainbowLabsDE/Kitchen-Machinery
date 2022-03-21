@@ -1,5 +1,6 @@
 #include <TFT_eSPI.h>
 #include <RotaryEncoder.h>
+#include <OneButton.h>
 
 #define PIN_ENC_A   14
 #define PIN_ENC_B   15
@@ -9,6 +10,7 @@
 TFT_eSPI tft = TFT_eSPI();
 
 RotaryEncoder *enc;
+OneButton encBtn(PIN_ENC_BTN, false, false); // active high, no pullup (because shares LCD LED pin on cramped breadboard setup)
 int32_t lastEncPos = 0;
 
 void encTick() {
@@ -35,11 +37,15 @@ void setup(void) {
     tft.println(0);
 
 
-    enc = new RotaryEncoder(PIN_ENC_A, PIN_ENC_B, RotaryEncoder::LatchMode::FOUR0);
-    pinMode(PIN_ENC_A, INPUT_PULLDOWN);
-    pinMode(PIN_ENC_B, INPUT_PULLDOWN);
+    enc = new RotaryEncoder(PIN_ENC_A, PIN_ENC_B, RotaryEncoder::LatchMode::FOUR3);
     attachInterrupt(PIN_ENC_A, encTick, CHANGE);
     attachInterrupt(PIN_ENC_B, encTick, CHANGE);
+    pinMode(PIN_ENC_A, INPUT_PULLUP);               // need to do pinMode after attachInterrupt, otherwise it get's overwritten (?)
+    pinMode(PIN_ENC_B, INPUT_PULLUP);
+
+    attachInterrupt(PIN_ENC_BTN, [] { encBtn.tick(); }, CHANGE);
+    pinMode(PIN_ENC_BTN, INPUT_PULLDOWN);
+    encBtn.attachClick([] { enc->setPosition(0); });
 }
 
 
@@ -52,4 +58,7 @@ void loop() {
         tft.setCursor(0, 32);
         tft.println(encPos);
     }
+
+    // also tick button in addition to interrupts
+    encBtn.tick();
 }
