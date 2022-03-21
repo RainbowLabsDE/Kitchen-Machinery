@@ -1,7 +1,19 @@
 #include <TFT_eSPI.h>
+#include <RotaryEncoder.h>
+
+#define PIN_ENC_A   14
+#define PIN_ENC_B   15
+#define PIN_ENC_BTN 13
 
 // Pin definitions and other options are inside platformio.ini
 TFT_eSPI tft = TFT_eSPI();
+
+RotaryEncoder *enc;
+int32_t lastEncPos = 0;
+
+void encTick() {
+    enc->tick();
+}
 
 void setup(void) {
     tft.init();
@@ -19,9 +31,25 @@ void setup(void) {
     tft.setTextColor(TFT_BLUE, TFT_BLACK);
     tft.println("!");
     delay(1000);
+    tft.setCursor(0, 32);
+    tft.println(0);
+
+
+    enc = new RotaryEncoder(PIN_ENC_A, PIN_ENC_B, RotaryEncoder::LatchMode::FOUR0);
+    pinMode(PIN_ENC_A, INPUT_PULLDOWN);
+    pinMode(PIN_ENC_B, INPUT_PULLDOWN);
+    attachInterrupt(PIN_ENC_A, encTick, CHANGE);
+    attachInterrupt(PIN_ENC_B, encTick, CHANGE);
 }
 
+
 void loop() {
-    tft.print(".");
-    delay(500);
+    int32_t encPos = enc->getPosition();
+    if (encPos != lastEncPos) {
+        lastEncPos = encPos;
+        tft.setCursor(0, 32);
+        tft.print("             ");
+        tft.setCursor(0, 32);
+        tft.println(encPos);
+    }
 }
