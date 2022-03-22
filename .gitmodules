@@ -1,0 +1,3 @@
+[submodule "Display/Software/lib/pico-onewire"]
+	path = Display/Software/lib/pico-onewire
+	url = https://github.com/LeoDJ/pico-onewire
