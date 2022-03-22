@@ -8,6 +8,9 @@
 #define PIN_ENC_B       15
 #define PIN_ENC_BTN     13
 #define PIN_ONEWIRE     7
+#define PIN_RS485_TX    4
+#define PIN_RS485_RX    5
+#define PIN_RS485_DE    6
 
 // Pin definitions and other options are inside platformio.ini
 TFT_eSPI tft = TFT_eSPI();
@@ -19,6 +22,8 @@ int32_t lastEncPos = 0;
 One_wire oneWire(PIN_ONEWIRE);
 rom_address_t tempAddr{};
 uint32_t lastTempRequestMillis = 0;
+
+UART rs485(PIN_RS485_TX, PIN_RS485_RX);
 
 
 void encTick() {
@@ -65,6 +70,17 @@ void setup(void) {
     tft.print(buf);
     oneWire.convert_temperature(tempAddr, false, false);
     lastTempRequestMillis = millis();
+    
+
+    pinMode(PIN_RS485_DE, OUTPUT);
+    const int baudRate = 115200;
+    rs485.begin(baudRate);
+    digitalWrite(PIN_RS485_DE, HIGH);
+    rs485.print("Hello World!!!!!!!!!!!!!!!!!!! 12345");
+    rs485.flush();
+    delayMicroseconds(15000000 / baudRate);   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
+    digitalWrite(PIN_RS485_DE, LOW);
+
 }
 
 
@@ -87,9 +103,13 @@ void loop() {
         float temp = oneWire.temperature(tempAddr);
         if (temp > -1000) {
             tft.print(temp);
-            tft.print(" °C");
+            tft.println(" °C");
         }
         oneWire.convert_temperature(tempAddr, false, false);
         lastTempRequestMillis = millis();
+    }
+
+    while (rs485.available()) {
+        tft.print(rs485.read());
     }
 }
