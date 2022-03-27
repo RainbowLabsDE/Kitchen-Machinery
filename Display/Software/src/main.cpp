@@ -3,6 +3,8 @@
 #include <OneButton.h>
 #include "api/one_wire.h"
 
+#include "rainbowBus.h"
+
 
 #define PIN_ENC_A       14
 #define PIN_ENC_B       15
@@ -11,6 +13,7 @@
 #define PIN_RS485_TX    4
 #define PIN_RS485_RX    5
 #define PIN_RS485_DE    6
+#define RS485_BAUD      1000000
 
 // Pin definitions and other options are inside platformio.ini
 TFT_eSPI tft = TFT_eSPI();
@@ -24,6 +27,15 @@ rom_address_t tempAddr{};
 uint32_t lastTempRequestMillis = 0;
 
 UART rs485(PIN_RS485_TX, PIN_RS485_RX);
+
+void rs485Write(const uint8_t *buf, size_t size) {
+    digitalWrite(PIN_RS485_DE, HIGH);
+    rs485.write(buf, size);
+    rs485.flush();
+    delayMicroseconds(15000000 / rs485.baud());   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
+    digitalWrite(PIN_RS485_DE, LOW);
+}
+RainbowBus rbb(rs485Write);
 
 
 void encTick() {
@@ -73,13 +85,15 @@ void setup(void) {
     
 
     pinMode(PIN_RS485_DE, OUTPUT);
-    const int baudRate = 115200;
-    rs485.begin(baudRate);
-    digitalWrite(PIN_RS485_DE, HIGH);
-    rs485.print("Hello World!!!!!!!!!!!!!!!!!!! 12345");
-    rs485.flush();
-    delayMicroseconds(15000000 / baudRate);   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
-    digitalWrite(PIN_RS485_DE, LOW);
+    rs485.begin(RS485_BAUD);
+    // digitalWrite(PIN_RS485_DE, HIGH);
+    // rs485.print("Hello World!!!!!!!!!!!!!!!!!!! 12345");
+    // rs485.flush();
+    // delayMicroseconds(15000000 / RS485_BAUD);   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
+    // digitalWrite(PIN_RS485_DE, LOW);
+    char *str = "Hello World!!!!!!!!!!!!!!!!!!! 12345";
+    // rs485Write((uint8_t*)str, strlen(str));
+    rbb.sendPacket(1, (uint8_t*)str, strlen(str));
 
 }
 
@@ -109,7 +123,11 @@ void loop() {
         lastTempRequestMillis = millis();
     }
 
-    while (rs485.available()) {
-        tft.print(rs485.read());
+    int availableBytes = rs485.available();
+    if (availableBytes) {
+        // tft.print(rs485.read());
+        uint8_t buf[availableBytes];
+        rs485.readBytes(buf, availableBytes);
+        rbb.handleBytes(buf, availableBytes);
     }
 }
