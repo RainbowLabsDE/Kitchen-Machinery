@@ -4,6 +4,7 @@
 #include "api/one_wire.h"
 
 #include "rainbowBus.h"
+#include "slushLink.h"
 
 
 #define PIN_ENC_A       14
@@ -20,11 +21,14 @@ TFT_eSPI tft = TFT_eSPI();
 
 RotaryEncoder *enc;
 OneButton encBtn(PIN_ENC_BTN, false, false); // active high, no pullup (because shares LCD LED pin on cramped breadboard setup)
-int32_t lastEncPos = 0;
+int32_t lastEncPos = 0, lastEncoderPos = 0;
+SlushLink::ButtonEvent lastBtnEvent = SlushLink::ButtonEvent::None;
+
 
 One_wire oneWire(PIN_ONEWIRE);
 rom_address_t tempAddr{};
 uint32_t lastTempRequestMillis = 0;
+float temperature = -1000;
 
 UART rs485(PIN_RS485_TX, PIN_RS485_RX);
 
@@ -35,12 +39,42 @@ void rs485Write(const uint8_t *buf, size_t size) {
     delayMicroseconds(15000000 / rs485.baud());   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
     digitalWrite(PIN_RS485_DE, LOW);
 }
-RainbowBus rbb(rs485Write);
+void incomingPacket(RainbowBus::rbbHeader_t *header, uint8_t *payload);
+RainbowBus rbb(1, rs485Write, incomingPacket);
 
 
 void encTick() {
     enc->tick();
 }
+
+
+void incomingPacket(RainbowBus::rbbHeader_t *header, uint8_t *payload) {
+    switch (header->packetType) {
+        case SlushLink::SLPacketType::GetTemperature: {
+            SlushLink::slPayload_GetTemperature_t payload = {
+                .temperature = temperature
+            };
+            rbb.sendPacket(header->fromId, (uint8_t*)&payload, sizeof(payload));
+            break;
+        }
+        case SlushLink::SLPacketType::GetInterfaceStatus: {
+            SlushLink::slPayload_GetInterfaceStatus_t payload = {
+                .encoderDeltaPos = enc->getPosition() - lastEncoderPos,
+                .encoderBtnEvent = lastBtnEvent
+            };
+            lastEncoderPos = enc->getPosition();
+            lastBtnEvent = SlushLink::ButtonEvent::None;
+            rbb.sendPacket(header->fromId, (uint8_t*)&payload, sizeof(payload));
+            break;
+        }
+        case SlushLink::SLPacketType::SetDisplayContent: {
+            SlushLink::slPayload_SetDisplayContent_t *dp = (SlushLink::slPayload_SetDisplayContent_t *)payload;
+            tft.pushImageDMA(dp->x, dp->y, dp->w, dp->h, dp->data);
+            break;
+        }
+    }
+}
+
 
 void setup(void) {
     tft.init();
@@ -70,7 +104,12 @@ void setup(void) {
 
     attachInterrupt(PIN_ENC_BTN, [] { encBtn.tick(); }, CHANGE);
     pinMode(PIN_ENC_BTN, INPUT_PULLDOWN);
-    encBtn.attachClick([] { enc->setPosition(0); });
+    encBtn.attachClick([] { lastBtnEvent = SlushLink::ButtonEvent::Click; });
+    encBtn.attachDoubleClick([] { lastBtnEvent = SlushLink::ButtonEvent::DoubleClick; });
+    encBtn.attachMultiClick([] { lastBtnEvent = SlushLink::ButtonEvent::TripleClick; });
+    encBtn.attachLongPressStart([] { lastBtnEvent = SlushLink::ButtonEvent::Hold; });
+    encBtn.attachDuringLongPress([] { lastBtnEvent = SlushLink::ButtonEvent::Hold; });
+    encBtn.attachLongPressStop([] { lastBtnEvent = SlushLink::ButtonEvent::Release; });
 
 
     oneWire.init();
@@ -91,7 +130,7 @@ void setup(void) {
     // rs485.flush();
     // delayMicroseconds(15000000 / RS485_BAUD);   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
     // digitalWrite(PIN_RS485_DE, LOW);
-    char *str = "Hello World!!!!!!!!!!!!!!!!!!! 12345";
+    const char *str = "Hello World!!!!!!!!!!!!!!!!!!! 12345";
     // rs485Write((uint8_t*)str, strlen(str));
     rbb.sendPacket(1, (uint8_t*)str, strlen(str));
 
@@ -111,12 +150,11 @@ void loop() {
     // also tick button in addition to interrupts
     encBtn.tick();
 
-
     if (millis() - lastTempRequestMillis > 750) {
         tft.setCursor(0, 96);
-        float temp = oneWire.temperature(tempAddr);
-        if (temp > -1000) {
-            tft.print(temp);
+        temperature = oneWire.temperature(tempAddr);
+        if (temperature > -1000) {
+            tft.print(temperature);
             tft.println(" °C");
         }
         oneWire.convert_temperature(tempAddr, false, false);
