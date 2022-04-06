@@ -3,10 +3,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-RainbowBus::RainbowBus(uint8_t id, void (*txFunc)(const uint8_t *buf, size_t size), void (*packetCallback)(rbbHeader_t *header, uint8_t *payload)) {
+RainbowBus::RainbowBus(uint8_t id, void (*txFunc)(const uint8_t *buf, size_t size), void (*packetCallback)(rbbHeader_t *header, uint8_t *payload), uint32_t (*getCurrentMillis)(void)) {
     _id = id;
     _sendBytes = txFunc;
     _packetCallback = packetCallback;
+    _getCurrentMillis = getCurrentMillis;
 }
 
 void RainbowBus::handleBytes(const uint8_t *bytes, size_t size) {
@@ -18,6 +19,13 @@ void RainbowBus::handleBytes(const uint8_t *bytes, size_t size) {
 }
 
 void RainbowBus::handleByte(uint8_t byte) {
+    // reset protocol handler after receiving an incomplete packet with timeout
+    if (_curReadIdx > 0 && _getCurrentMillis() - _timeLastHandledByte > RbbTimeout) {
+        _curReadIdx = 0;
+    }
+    
+    printf("[RBB] %d %02X - ", _curReadIdx, byte);
+
     if (_curReadIdx == 0) {
         if (_packetBuf != NULL) {
             free(_packetBuf);
@@ -33,7 +41,7 @@ void RainbowBus::handleByte(uint8_t byte) {
 
     rbbHeader_t *header = (rbbHeader_t*)_packetBuf;
     if (_curReadIdx == sizeof(rbbHeader_t) - 1) {
-        _packetBuf = (uint8_t*)realloc(_packetBuf, sizeof(rbbHeader_t) + header->length);
+        _packetBuf = (uint8_t*)realloc(_packetBuf, sizeof(rbbHeader_t) + header->length + sizeof(uint16_t));
         // TODO NULL handling
     }
     else if (_curReadIdx >= sizeof(rbbHeader_t) + header->length) {
@@ -68,19 +76,25 @@ void RainbowBus::handleByte(uint8_t byte) {
     }
 
     _curReadIdx++;
+    _timeLastHandledByte = _getCurrentMillis();
+    printf("\n");
 }
 
 
-void RainbowBus::sendPacket(uint8_t dstId, const uint8_t *payload, size_t payloadSize, bool needAck) {
+void RainbowBus::sendPacket(uint8_t dstId, uint8_t packetType, const uint8_t *payload, size_t payloadSize, bool needAck) {
     uint8_t packetSize = sizeof(rbbHeader_t) + payloadSize + sizeof(uint16_t);
     uint8_t buf[packetSize];
     rbbHeader_t *header = (rbbHeader_t *)buf;
 
     header->dstId = dstId;
     header->fromId = _id;
+    header->packetType = packetType;
     header->length = payloadSize;
-    memcpy(buf + sizeof(rbbHeader_t), payload, payloadSize);                                                        // copy payload to packet buffer
-    update_crc16((uint16_t*)(buf + sizeof(rbbHeader_t) + payloadSize), buf, sizeof(rbbHeader_t) + payloadSize);     // calculate CRC and store at end of packet
+    if (payload != NULL) {
+        memcpy(buf + sizeof(rbbHeader_t), payload, payloadSize);                                                        // copy payload to packet buffer
+    }
+    uint16_t crc = crc16(buf, sizeof(rbbHeader_t) + payloadSize);     // calculate CRC and store at end of packet
+    memcpy(buf + sizeof(rbbHeader_t) + payloadSize, &crc, sizeof(uint16_t));
 
     if (needAck) {
         _awaitingAckFromId = dstId;

@@ -6,6 +6,8 @@
 #include "rainbowBus.h"
 #include "slushLink.h"
 
+REDIRECT_STDOUT_TO(Serial); 
+
 
 #define PIN_ENC_A       14
 #define PIN_ENC_B       15
@@ -14,7 +16,6 @@
 #define PIN_RS485_TX    4
 #define PIN_RS485_RX    5
 #define PIN_RS485_DE    6
-#define RS485_BAUD      1000000
 
 // Pin definitions and other options are inside platformio.ini
 TFT_eSPI tft = TFT_eSPI();
@@ -30,17 +31,24 @@ rom_address_t tempAddr{};
 uint32_t lastTempRequestMillis = 0;
 float temperature = -1000;
 
-UART rs485(PIN_RS485_TX, PIN_RS485_RX);
+// UART rs485(PIN_RS485_TX, PIN_RS485_RX);
+#define RS485_UART  uart1
 
 void rs485Write(const uint8_t *buf, size_t size) {
     digitalWrite(PIN_RS485_DE, HIGH);
-    rs485.write(buf, size);
-    rs485.flush();
-    delayMicroseconds(15000000 / rs485.baud());   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
+    // rs485.write(buf, size);
+    // rs485.flush();
+    uart_write_blocking(RS485_UART, buf, size);
+    delayMicroseconds(15000000 / RAINBOWBUS_BAUD);   // delay needed, otherwise last byte is cut off and flush() doesn't do enough
     digitalWrite(PIN_RS485_DE, LOW);
+    // printf("> ");
+    // for (int i = 0; i < size; i++) {
+    //     printf("%02X ", buf[i]);
+    // }
+    // printf("\n");
 }
 void incomingPacket(RainbowBus::rbbHeader_t *header, uint8_t *payload);
-RainbowBus rbb(1, rs485Write, incomingPacket);
+RainbowBus rbb(1, rs485Write, incomingPacket, millis);
 
 
 void encTick() {
@@ -49,32 +57,45 @@ void encTick() {
 
 
 void incomingPacket(RainbowBus::rbbHeader_t *header, uint8_t *payload) {
+    printf("Incoming Packet from %d, to %d, type %02X, length %d\n", header->fromId, header->dstId, header->packetType, header->length);
     switch (header->packetType) {
         case SlushLink::SLPacketType::GetTemperature: {
             SlushLink::slPayload_GetTemperature_t payload = {
                 .temperature = temperature
             };
-            rbb.sendPacket(header->fromId, (uint8_t*)&payload, sizeof(payload));
+            rbb.sendPacket(header->fromId, header->packetType, (uint8_t*)&payload, sizeof(payload));
             break;
         }
         case SlushLink::SLPacketType::GetInterfaceStatus: {
             SlushLink::slPayload_GetInterfaceStatus_t payload = {
-                .encoderDeltaPos = enc->getPosition() - lastEncoderPos,
+                .encoderDeltaPos = (int8_t)(enc->getPosition() - lastEncoderPos),
                 .encoderBtnEvent = lastBtnEvent
             };
             lastEncoderPos = enc->getPosition();
             lastBtnEvent = SlushLink::ButtonEvent::None;
-            rbb.sendPacket(header->fromId, (uint8_t*)&payload, sizeof(payload));
+            rbb.sendPacket(header->fromId, header->packetType, (uint8_t*)&payload, sizeof(payload));
             break;
         }
         case SlushLink::SLPacketType::SetDisplayContent: {
             SlushLink::slPayload_SetDisplayContent_t *dp = (SlushLink::slPayload_SetDisplayContent_t *)payload;
             tft.pushImageDMA(dp->x, dp->y, dp->w, dp->h, dp->data);
+            // TODO: send ACK
             break;
         }
     }
 }
 
+RingBuffer rs485Buf;
+
+void on_rs485_rx() {
+    while (uart_is_readable(RS485_UART)) {
+        uint8_t ch = uart_getc(RS485_UART);
+        // printf("%02X \n", ch);
+        if (rs485Buf.availableForStore()) {
+            rs485Buf.store_char(ch);
+        }
+    }
+}
 
 void setup(void) {
     tft.init();
@@ -124,7 +145,16 @@ void setup(void) {
     
 
     pinMode(PIN_RS485_DE, OUTPUT);
-    rs485.begin(RS485_BAUD);
+    // rs485.begin(RAINBOWBUS_BAUD);
+    uint32_t actualBaud = uart_init(RS485_UART, RAINBOWBUS_BAUD);
+    gpio_set_function(PIN_RS485_TX, GPIO_FUNC_UART);
+    gpio_set_function(PIN_RS485_RX, GPIO_FUNC_UART);
+    uart_set_fifo_enabled(RS485_UART, false);
+    int UART_IRQ = RS485_UART == uart0 ? UART0_IRQ : UART1_IRQ;
+    irq_set_exclusive_handler(UART_IRQ, on_rs485_rx);
+    irq_set_enabled(UART_IRQ, true);
+    uart_set_irq_enables(RS485_UART, true, false);
+
     // digitalWrite(PIN_RS485_DE, HIGH);
     // rs485.print("Hello World!!!!!!!!!!!!!!!!!!! 12345");
     // rs485.flush();
@@ -132,7 +162,9 @@ void setup(void) {
     // digitalWrite(PIN_RS485_DE, LOW);
     const char *str = "Hello World!!!!!!!!!!!!!!!!!!! 12345";
     // rs485Write((uint8_t*)str, strlen(str));
-    rbb.sendPacket(1, (uint8_t*)str, strlen(str));
+    // rbb.sendPacket(1, (uint8_t*)str, strlen(str));
+    delay(3000);
+    printf("KitchenMachinery Display - Hello World!\n");
 
 }
 
@@ -146,7 +178,6 @@ void loop() {
         tft.setCursor(0, 32);
         tft.println(encPos);
     }
-
     // also tick button in addition to interrupts
     encBtn.tick();
 
@@ -161,11 +192,24 @@ void loop() {
         lastTempRequestMillis = millis();
     }
 
-    int availableBytes = rs485.available();
-    if (availableBytes) {
-        // tft.print(rs485.read());
-        uint8_t buf[availableBytes];
-        rs485.readBytes(buf, availableBytes);
-        rbb.handleBytes(buf, availableBytes);
+    // int availableBytes = rs485.available();
+    // if (availableBytes) {
+    //     // tft.print(rs485.read());
+    //     uint8_t buf[availableBytes];
+    //     rs485.readBytes(buf, availableBytes);
+    //     rbb.handleBytes(buf, availableBytes);
+    //     // printf("> ");
+    //     // for (int i = 0; i < availableBytes; i++) {
+    //     //     printf("%02X ", buf[i]);
+    //     // }
+    //     // printf("\n");
+    // }
+
+    if (rs485Buf.available()) {
+        while (rs485Buf.available()) {
+            // printf("%02X ", rs485Buf.read_char());
+            rbb.handleByte(rs485Buf.read_char());
+        }
+        printf("\n");
     }
 }
